@@ -70,7 +70,7 @@ $appName = get_value($config, 'app_name', 'ISHII DESIGN Original Chat');
           <label class="visually-hidden" for="messageInput">メッセージ</label>
           <textarea id="messageInput" maxlength="1000" rows="1" placeholder="メッセージを書く"></textarea>
           <label class="file-button" for="fileInput">添付</label>
-          <input id="fileInput" class="visually-hidden" type="file" />
+          <input id="fileInput" class="visually-hidden" type="file" accept="image/*,.pdf" />
           <button id="sendButton" type="submit">送信</button>
           <div id="filePreview" class="file-preview hidden">
             <span id="fileName"></span>
