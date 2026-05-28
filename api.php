@@ -153,6 +153,7 @@ try {
 
         session_regenerate_id(true);
         $_SESSION['user_id'] = $user['id'];
+        issue_remember_cookie($user['id']);
         $members = touch_presence($user);
         send_json(200, array(
             'user' => public_user($user),
@@ -180,6 +181,7 @@ try {
             );
         }
         session_destroy();
+        clear_remember_cookie();
         send_json(200, array('ok' => true));
     }
 
