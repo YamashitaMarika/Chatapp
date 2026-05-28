@@ -25,6 +25,8 @@ let currentUser = null;
 let currentEmail = "";
 let latestSequence = 0;
 let pollTimer = null;
+let unreadCount = 0;
+const baseTitle = document.title;
 
 boot();
 
@@ -138,6 +140,12 @@ elements.fileInput.addEventListener("change", updateFilePreview);
 
 elements.clearFileButton.addEventListener("click", clearSelectedFile);
 
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    resetUnread();
+  }
+});
+
 async function boot() {
   try {
     const result = await api("me");
@@ -155,6 +163,7 @@ async function showChat() {
   elements.chatView.classList.remove("hidden");
   elements.accountLabel.textContent = currentUser.displayName || "member";
   await refreshMessages(true);
+  resetUnread();
   pollTimer = setInterval(refreshMessages, 1500);
   elements.messageInput.focus();
 }
@@ -165,6 +174,7 @@ function showAuth() {
   elements.emailForm.classList.remove("hidden");
   elements.codeForm.classList.add("hidden");
   elements.emailInput.focus();
+  resetUnread();
 }
 
 async function refreshMessages(initial = false) {
@@ -173,8 +183,11 @@ async function refreshMessages(initial = false) {
     if (initial) {
       elements.messageList.replaceChildren();
     }
-    appendMessages(result.messages);
+    const incomingFromOthers = appendMessages(result.messages);
     updatePresence(result.members || []);
+    if (document.visibilityState !== "visible" && incomingFromOthers > 0) {
+      incrementUnread(incomingFromOthers);
+    }
     latestSequence = Math.max(latestSequence, result.latestSequence || 0);
   } catch (error) {
     if (error.status === 401) {
@@ -188,7 +201,9 @@ async function refreshMessages(initial = false) {
 }
 
 function appendMessages(messages) {
-  if (!messages.length) return;
+  if (!messages.length) return 0;
+
+  let incomingFromOthers = 0;
 
   const shouldStickToBottom =
     elements.messageList.scrollHeight - elements.messageList.scrollTop - elements.messageList.clientHeight < 90;
@@ -220,12 +235,39 @@ function appendMessages(messages) {
     item.append(meta, bubble);
     elements.messageList.append(item);
     latestSequence = Math.max(latestSequence, message.sequence || 0);
+    if (message.userId !== currentUser.id) {
+      incomingFromOthers += 1;
+    }
   }
 
   if (shouldStickToBottom) {
     requestAnimationFrame(() => {
       elements.messageList.scrollTop = elements.messageList.scrollHeight;
     });
+  }
+
+  return incomingFromOthers;
+}
+
+function incrementUnread(count) {
+  unreadCount += count;
+  updateUnreadIndicators();
+}
+
+function resetUnread() {
+  unreadCount = 0;
+  updateUnreadIndicators();
+}
+
+function updateUnreadIndicators() {
+  document.title = unreadCount > 0 ? `(${unreadCount}) ${baseTitle}` : baseTitle;
+
+  if (typeof navigator.setAppBadge === "function") {
+    if (unreadCount > 0) {
+      navigator.setAppBadge(unreadCount).catch(() => {});
+    } else if (typeof navigator.clearAppBadge === "function") {
+      navigator.clearAppBadge().catch(() => {});
+    }
   }
 }
 
