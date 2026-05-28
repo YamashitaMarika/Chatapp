@@ -534,11 +534,16 @@ function send_login_code($email, $code)
         mb_internal_encoding('UTF-8');
     }
 
+    $ok = false;
+
     if (function_exists('mb_send_mail')) {
         $ok = $params !== ''
             ? mb_send_mail($email, $subject, $body, $headers, $params)
             : mb_send_mail($email, $subject, $body, $headers);
-    } else {
+    }
+
+    // 環境依存で mb_send_mail が失敗するケースがあるため、mail() にフォールバックする。
+    if (!$ok) {
         $encodedSubject = encode_mime_header($subject);
         $ok = $params !== ''
             ? mail($email, $encodedSubject, $body, $headers, $params)
