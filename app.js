@@ -26,6 +26,7 @@ let currentEmail = "";
 let latestSequence = 0;
 let pollTimer = null;
 let unreadCount = 0;
+let selectedFiles = [];
 const baseTitle = document.title;
 const maxAttachments = 5;
 
@@ -107,18 +108,13 @@ elements.logoutButton.addEventListener("click", async () => {
 elements.messageForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = elements.messageInput.value.trim();
-  const files = Array.from(elements.fileInput.files || []);
-  if (!text && !files.length) return;
-  if (files.length > maxAttachments) {
-    alert(`添付ファイルは${maxAttachments}個まで選択できます。`);
-    return;
-  }
+  if (!text && !selectedFiles.length) return;
 
   elements.sendButton.disabled = true;
   try {
     const formData = new FormData();
     formData.append("text", text);
-    for (const file of files) {
+    for (const file of selectedFiles) {
       formData.append("files[]", file);
     }
 
@@ -141,7 +137,7 @@ elements.messageForm.addEventListener("submit", async (event) => {
 
 elements.messageInput.addEventListener("input", resizeMessageInput);
 
-elements.fileInput.addEventListener("change", updateFilePreview);
+elements.fileInput.addEventListener("change", addSelectedFiles);
 
 elements.clearFileButton.addEventListener("click", clearSelectedFile);
 
@@ -337,27 +333,35 @@ function updatePresence(members) {
   elements.presenceList.textContent = members.map((member) => member.displayName || "member").join(", ");
 }
 
+function addSelectedFiles() {
+  const incomingFiles = Array.from(elements.fileInput.files || []);
+  if (!incomingFiles.length) return;
+
+  if (selectedFiles.length + incomingFiles.length > maxAttachments) {
+    alert(`添付ファイルは${maxAttachments}個まで選択できます。`);
+    elements.fileInput.value = "";
+    return;
+  }
+
+  selectedFiles = selectedFiles.concat(incomingFiles);
+  elements.fileInput.value = "";
+  updateFilePreview();
+}
+
 function updateFilePreview() {
-  const files = Array.from(elements.fileInput.files || []);
-  if (!files.length) {
+  if (!selectedFiles.length) {
     elements.filePreview.classList.add("hidden");
     elements.fileName.textContent = "";
     return;
   }
 
-  if (files.length > maxAttachments) {
-    alert(`添付ファイルは${maxAttachments}個まで選択できます。`);
-    clearSelectedFile();
-    return;
-  }
-
-  elements.fileName.textContent = files
-    .map((file) => `${file.name} (${formatFileSize(file.size)})`)
-    .join(", ");
+  const names = selectedFiles.map((file) => `${file.name} (${formatFileSize(file.size)})`).join(", ");
+  elements.fileName.textContent = `${selectedFiles.length}/${maxAttachments}: ${names}`;
   elements.filePreview.classList.remove("hidden");
 }
 
 function clearSelectedFile() {
+  selectedFiles = [];
   elements.fileInput.value = "";
   updateFilePreview();
 }
