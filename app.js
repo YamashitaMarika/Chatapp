@@ -27,6 +27,7 @@ let latestSequence = 0;
 let pollTimer = null;
 let unreadCount = 0;
 const baseTitle = document.title;
+const maxAttachments = 5;
 
 boot();
 
@@ -106,15 +107,19 @@ elements.logoutButton.addEventListener("click", async () => {
 elements.messageForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = elements.messageInput.value.trim();
-  const file = elements.fileInput.files[0] || null;
-  if (!text && !file) return;
+  const files = Array.from(elements.fileInput.files || []);
+  if (!text && !files.length) return;
+  if (files.length > maxAttachments) {
+    alert(`添付ファイルは${maxAttachments}個まで選択できます。`);
+    return;
+  }
 
   elements.sendButton.disabled = true;
   try {
     const formData = new FormData();
     formData.append("text", text);
-    if (file) {
-      formData.append("file", file);
+    for (const file of files) {
+      formData.append("files[]", file);
     }
 
     const result = await api("messages", {
@@ -228,8 +233,8 @@ function appendMessages(messages) {
     if (message.text) {
       appendLinkedText(bubble, message.text);
     }
-    if (message.attachment) {
-      appendAttachment(bubble, message.attachment);
+    for (const attachment of messageAttachments(message)) {
+      appendAttachment(bubble, attachment);
     }
 
     item.append(meta, bubble);
@@ -333,20 +338,35 @@ function updatePresence(members) {
 }
 
 function updateFilePreview() {
-  const file = elements.fileInput.files[0];
-  if (!file) {
+  const files = Array.from(elements.fileInput.files || []);
+  if (!files.length) {
     elements.filePreview.classList.add("hidden");
     elements.fileName.textContent = "";
     return;
   }
 
-  elements.fileName.textContent = `${file.name} (${formatFileSize(file.size)})`;
+  if (files.length > maxAttachments) {
+    alert(`添付ファイルは${maxAttachments}個まで選択できます。`);
+    clearSelectedFile();
+    return;
+  }
+
+  elements.fileName.textContent = files
+    .map((file) => `${file.name} (${formatFileSize(file.size)})`)
+    .join(", ");
   elements.filePreview.classList.remove("hidden");
 }
 
 function clearSelectedFile() {
   elements.fileInput.value = "";
   updateFilePreview();
+}
+
+function messageAttachments(message) {
+  if (Array.isArray(message.attachments)) {
+    return message.attachments;
+  }
+  return message.attachment ? [message.attachment] : [];
 }
 
 function appendAttachment(container, attachment) {

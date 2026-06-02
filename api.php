@@ -211,16 +211,20 @@ try {
         check_rate_limit('message:' . $user['id'], 60, 60);
 
         $contentType = get_value($_SERVER, 'CONTENT_TYPE', '');
-        $attachment = null;
+        $attachments = array();
         if (stripos($contentType, 'multipart/form-data') !== false) {
             $text = trim(str_replace("\r\n", "\n", (string) get_value($_POST, 'text', '')));
-            $attachment = save_uploaded_attachment(get_value($_FILES, 'file', null));
+            $attachments = save_uploaded_attachments(get_value($_FILES, 'files', null));
+            if (!$attachments) {
+                $legacyAttachment = save_uploaded_attachment(get_value($_FILES, 'file', null));
+                $attachments = $legacyAttachment ? array($legacyAttachment) : array();
+            }
         } else {
             $body = read_json_body();
             $text = trim(str_replace("\r\n", "\n", (string) get_value($body, 'text', '')));
         }
 
-        if ($text === '' && !$attachment) {
+        if ($text === '' && !$attachments) {
             send_json(400, array(
                 'error' => 'EMPTY_MESSAGE',
                 'message' => 'メッセージかファイルを入力してください。',
@@ -233,7 +237,7 @@ try {
             ));
         }
 
-        $message = update_state(function (&$state) use ($user, $text, $attachment) {
+        $message = update_state(function (&$state) use ($user, $text, $attachments) {
             $state['lastSequence'] = (int) get_value($state, 'lastSequence', 0) + 1;
             $message = array(
                 'id' => uuid(),
@@ -243,8 +247,8 @@ try {
                 'text' => $text,
                 'createdAt' => gmdate('c'),
             );
-            if ($attachment) {
-                $message['attachment'] = $attachment;
+            if ($attachments) {
+                $message['attachments'] = $attachments;
             }
             $state['messages'][] = $message;
             $state['messages'] = array_slice($state['messages'], -MAX_MESSAGES);
@@ -261,6 +265,11 @@ try {
     send_json(404, array(
         'error' => 'NOT_FOUND',
         'message' => '見つかりません。',
+    ));
+} catch (UploadException $error) {
+    send_json(400, array(
+        'error' => 'UPLOAD_ERROR',
+        'message' => $error->getMessage(),
     ));
 } catch (Exception $error) {
     error_log($error);
