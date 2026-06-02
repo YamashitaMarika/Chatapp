@@ -267,17 +267,97 @@ function clean_display_name($value, $email)
 
 function current_user()
 {
+    $state = read_state();
+
     $userId = get_value($_SESSION, 'user_id', '');
+    if ($userId !== '') {
+        foreach ($state['users'] as $user) {
+            if (get_value($user, 'id', '') === $userId) {
+                return $user;
+            }
+        }
+    }
+
+    $user = user_from_remember_cookie($state);
+    if ($user) {
+        $_SESSION['user_id'] = get_value($user, 'id', '');
+        return $user;
+    }
+
+    return null;
+}
+
+function issue_remember_cookie($userId)
+{
     if ($userId === '') {
+        return;
+    }
+
+    $expiresAt = time() + SESSION_TTL_SECONDS;
+    $payload = $userId . '|' . $expiresAt;
+    $signature = hash_hmac('sha256', $payload, (string) config_value('session_secret', ''));
+
+    setcookie(
+        'community_chat_remember',
+        $payload . '|' . $signature,
+        $expiresAt,
+        '/',
+        '',
+        (bool) config_value('cookie_secure', is_https()),
+        true
+    );
+}
+
+function clear_remember_cookie()
+{
+    setcookie(
+        'community_chat_remember',
+        '',
+        time() - 42000,
+        '/',
+        '',
+        (bool) config_value('cookie_secure', is_https()),
+        true
+    );
+}
+
+function user_from_remember_cookie($state)
+{
+    $cookie = trim((string) get_value($_COOKIE, 'community_chat_remember', ''));
+    if ($cookie === '') {
         return null;
     }
 
-    $state = read_state();
+    $parts = explode('|', $cookie);
+    if (count($parts) !== 3) {
+        clear_remember_cookie();
+        return null;
+    }
+
+    $userId = (string) $parts[0];
+    $expiresAt = (int) $parts[1];
+    $signature = (string) $parts[2];
+
+    if ($userId === '' || $expiresAt < time()) {
+        clear_remember_cookie();
+        return null;
+    }
+
+    $payload = $userId . '|' . $expiresAt;
+    $expected = hash_hmac('sha256', $payload, (string) config_value('session_secret', ''));
+    if (!safe_hash_equals($expected, $signature)) {
+        clear_remember_cookie();
+        return null;
+    }
+
     foreach ($state['users'] as $user) {
         if (get_value($user, 'id', '') === $userId) {
+            issue_remember_cookie($userId);
             return $user;
         }
     }
+
+    clear_remember_cookie();
     return null;
 }
 
@@ -534,11 +614,16 @@ function send_login_code($email, $code)
         mb_internal_encoding('UTF-8');
     }
 
+    $ok = false;
+
     if (function_exists('mb_send_mail')) {
         $ok = $params !== ''
             ? mb_send_mail($email, $subject, $body, $headers, $params)
             : mb_send_mail($email, $subject, $body, $headers);
-    } else {
+    }
+
+    // 環境依存で mb_send_mail が失敗するケースがあるため、mail() にフォールバックする。
+    if (!$ok) {
         $encodedSubject = encode_mime_header($subject);
         $ok = $params !== ''
             ? mail($email, $encodedSubject, $body, $headers, $params)
