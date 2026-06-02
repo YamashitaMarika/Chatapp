@@ -10,6 +10,11 @@ define('DEFAULT_MAX_UPLOAD_BYTES', 10485760);
 define('AUTH_CODE_TTL_SECONDS', 600);
 define('SESSION_TTL_SECONDS', 2592000);
 define('AUTH_ATTEMPT_LIMIT', 5);
+define('MAX_ATTACHMENTS_PER_MESSAGE', 5);
+
+class UploadException extends Exception
+{
+}
 
 function config()
 {
@@ -267,17 +272,97 @@ function clean_display_name($value, $email)
 
 function current_user()
 {
+    $state = read_state();
+
     $userId = get_value($_SESSION, 'user_id', '');
+    if ($userId !== '') {
+        foreach ($state['users'] as $user) {
+            if (get_value($user, 'id', '') === $userId) {
+                return $user;
+            }
+        }
+    }
+
+    $user = user_from_remember_cookie($state);
+    if ($user) {
+        $_SESSION['user_id'] = get_value($user, 'id', '');
+        return $user;
+    }
+
+    return null;
+}
+
+function issue_remember_cookie($userId)
+{
     if ($userId === '') {
+        return;
+    }
+
+    $expiresAt = time() + SESSION_TTL_SECONDS;
+    $payload = $userId . '|' . $expiresAt;
+    $signature = hash_hmac('sha256', $payload, (string) config_value('session_secret', ''));
+
+    setcookie(
+        'community_chat_remember',
+        $payload . '|' . $signature,
+        $expiresAt,
+        '/',
+        '',
+        (bool) config_value('cookie_secure', is_https()),
+        true
+    );
+}
+
+function clear_remember_cookie()
+{
+    setcookie(
+        'community_chat_remember',
+        '',
+        time() - 42000,
+        '/',
+        '',
+        (bool) config_value('cookie_secure', is_https()),
+        true
+    );
+}
+
+function user_from_remember_cookie($state)
+{
+    $cookie = trim((string) get_value($_COOKIE, 'community_chat_remember', ''));
+    if ($cookie === '') {
         return null;
     }
 
-    $state = read_state();
+    $parts = explode('|', $cookie);
+    if (count($parts) !== 3) {
+        clear_remember_cookie();
+        return null;
+    }
+
+    $userId = (string) $parts[0];
+    $expiresAt = (int) $parts[1];
+    $signature = (string) $parts[2];
+
+    if ($userId === '' || $expiresAt < time()) {
+        clear_remember_cookie();
+        return null;
+    }
+
+    $payload = $userId . '|' . $expiresAt;
+    $expected = hash_hmac('sha256', $payload, (string) config_value('session_secret', ''));
+    if (!safe_hash_equals($expected, $signature)) {
+        clear_remember_cookie();
+        return null;
+    }
+
     foreach ($state['users'] as $user) {
         if (get_value($user, 'id', '') === $userId) {
+            issue_remember_cookie($userId);
             return $user;
         }
     }
+
+    clear_remember_cookie();
     return null;
 }
 
@@ -357,9 +442,34 @@ function public_message($message)
         'createdAt' => get_value($message, 'createdAt', gmdate('c')),
     );
 
-    $attachment = get_value($message, 'attachment', null);
-    if (is_array($attachment)) {
-        $public['attachment'] = public_attachment($attachment);
+    $attachments = public_message_attachments($message);
+    if ($attachments) {
+        $public['attachments'] = $attachments;
+        $public['attachment'] = $attachments[0];
+    }
+
+    return $public;
+}
+
+function public_message_attachments($message)
+{
+    $attachments = get_value($message, 'attachments', array());
+    if (!is_array($attachments)) {
+        $attachments = array();
+    }
+
+    $public = array();
+    foreach ($attachments as $attachment) {
+        if (is_array($attachment)) {
+            $public[] = public_attachment($attachment);
+        }
+    }
+
+    if (!$public) {
+        $attachment = get_value($message, 'attachment', null);
+        if (is_array($attachment)) {
+            $public[] = public_attachment($attachment);
+        }
     }
 
     return $public;
@@ -377,6 +487,47 @@ function public_attachment($attachment)
     );
 }
 
+function save_uploaded_attachments($files)
+{
+    $files = array_values(array_filter(normalize_uploaded_files($files), function ($file) {
+        return get_value($file, 'error', UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE;
+    }));
+
+    if (count($files) > MAX_ATTACHMENTS_PER_MESSAGE) {
+        throw new UploadException('添付ファイルは' . MAX_ATTACHMENTS_PER_MESSAGE . '個まで選択できます。');
+    }
+
+    $attachments = array();
+    foreach ($files as $file) {
+        $attachments[] = save_uploaded_attachment($file);
+    }
+    return $attachments;
+}
+
+function normalize_uploaded_files($files)
+{
+    if (!is_array($files)) {
+        return array();
+    }
+
+    $names = get_value($files, 'name', null);
+    if (!is_array($names)) {
+        return array($files);
+    }
+
+    $normalized = array();
+    foreach ($names as $index => $name) {
+        $normalized[] = array(
+            'name' => $name,
+            'type' => get_value(get_value($files, 'type', array()), $index, ''),
+            'tmp_name' => get_value(get_value($files, 'tmp_name', array()), $index, ''),
+            'error' => get_value(get_value($files, 'error', array()), $index, UPLOAD_ERR_NO_FILE),
+            'size' => get_value(get_value($files, 'size', array()), $index, 0),
+        );
+    }
+    return $normalized;
+}
+
 function save_uploaded_attachment($file)
 {
     if (!is_array($file) || get_value($file, 'error', UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
@@ -384,23 +535,23 @@ function save_uploaded_attachment($file)
     }
 
     if ((int) get_value($file, 'error', UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
-        throw new Exception('ファイルのアップロードに失敗しました。');
+        throw new UploadException('ファイルのアップロードに失敗しました。');
     }
 
     $size = (int) get_value($file, 'size', 0);
     $maxBytes = (int) config_value('max_upload_bytes', DEFAULT_MAX_UPLOAD_BYTES);
     if ($size <= 0) {
-        throw new Exception('空のファイルは添付できません。');
+        throw new UploadException('空のファイルは添付できません。');
     }
     if ($size > $maxBytes) {
-        throw new Exception('添付ファイルは' . format_bytes($maxBytes) . '以内にしてください。');
+        throw new UploadException('添付ファイルは' . format_bytes($maxBytes) . '以内にしてください。');
     }
 
     $originalName = sanitize_file_name(get_value($file, 'name', 'attachment'));
     $extension = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
     $allowed = config_value('allowed_upload_extensions', array());
     if ($extension === '' || !in_array($extension, $allowed, true)) {
-        throw new Exception('この種類のファイルは添付できません。');
+        throw new UploadException('この種類のファイルは添付できません。');
     }
 
     $id = uuid();
@@ -409,7 +560,7 @@ function save_uploaded_attachment($file)
     $tmpName = get_value($file, 'tmp_name', '');
 
     if (!is_uploaded_file($tmpName) || !move_uploaded_file($tmpName, $destination)) {
-        throw new Exception('ファイルを保存できませんでした。');
+        throw new UploadException('ファイルを保存できませんでした。');
     }
     @chmod($destination, 0600);
 
@@ -427,6 +578,15 @@ function find_attachment($id)
 {
     $state = read_state();
     foreach ($state['messages'] as $message) {
+        $attachments = get_value($message, 'attachments', array());
+        if (is_array($attachments)) {
+            foreach ($attachments as $attachment) {
+                if (is_array($attachment) && get_value($attachment, 'id', '') === $id) {
+                    return $attachment;
+                }
+            }
+        }
+
         $attachment = get_value($message, 'attachment', null);
         if (is_array($attachment) && get_value($attachment, 'id', '') === $id) {
             return $attachment;
@@ -534,11 +694,16 @@ function send_login_code($email, $code)
         mb_internal_encoding('UTF-8');
     }
 
+    $ok = false;
+
     if (function_exists('mb_send_mail')) {
         $ok = $params !== ''
             ? mb_send_mail($email, $subject, $body, $headers, $params)
             : mb_send_mail($email, $subject, $body, $headers);
-    } else {
+    }
+
+    // 環境依存で mb_send_mail が失敗するケースがあるため、mail() にフォールバックする。
+    if (!$ok) {
         $encodedSubject = encode_mime_header($subject);
         $ok = $params !== ''
             ? mail($email, $encodedSubject, $body, $headers, $params)
